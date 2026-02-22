@@ -17,7 +17,7 @@
   // -----------------------------------------------------------------------
   // Configuration
   // -----------------------------------------------------------------------
-  var JUPYTERLITE_URL = 'lite/notebooks/index.html';
+  var JUPYTERLITE_URL = 'lite/lab/index.html';
   var NOTEBOOK_FILE = 'assignment.ipynb';
   var SAVE_DEBOUNCE_MS = 3000;
   var AUTO_SAVE_INTERVAL_MS = 30000;
@@ -324,6 +324,44 @@
   }
 
   // -----------------------------------------------------------------------
+  // Submission Progress Overlay
+  // -----------------------------------------------------------------------
+
+  function showSubmitProgress(message) {
+    var overlay = document.getElementById('submit-progress');
+    var text = document.getElementById('submit-progress-text');
+    if (overlay) overlay.classList.add('visible');
+    if (text) text.textContent = message || 'Submitting...';
+  }
+
+  function updateSubmitProgress(message) {
+    var text = document.getElementById('submit-progress-text');
+    if (text) text.textContent = message;
+  }
+
+  function hideSubmitProgress() {
+    var overlay = document.getElementById('submit-progress');
+    if (overlay) overlay.classList.remove('visible');
+  }
+
+  function showSubmitSuccess() {
+    updateSubmitProgress('Submitted! You may now close this page.');
+    var spinner = document.getElementById('submit-progress-spinner');
+    if (spinner) spinner.style.display = 'none';
+    var check = document.getElementById('submit-progress-check');
+    if (check) check.style.display = 'block';
+    // Auto-hide after 4 seconds
+    setTimeout(hideSubmitProgress, 4000);
+  }
+
+  function showSubmitError(msg) {
+    updateSubmitProgress('Submission failed: ' + (msg || 'Unknown error. Please try again.'));
+    var spinner = document.getElementById('submit-progress-spinner');
+    if (spinner) spinner.style.display = 'none';
+    setTimeout(hideSubmitProgress, 4000);
+  }
+
+  // -----------------------------------------------------------------------
   // Submission
   // -----------------------------------------------------------------------
 
@@ -331,54 +369,80 @@
     var submitBtn = document.getElementById('btn-submit');
     if (submitBtn) submitBtn.disabled = true;
 
+    showSubmitProgress('Getting notebook content...');
+
+    // Try to get notebook content from the extension/shim
     sendToExtension('getNotebook').then(function (data) {
-      if (!data || !data.notebook) {
-        console.error('[bridge.js] Cannot get notebook for submission');
-        if (submitBtn) submitBtn.disabled = false;
-        return;
-      }
-
-      _state.notebook = data.notebook;
-      _state.submitted = true;
-      _state.events = _events;
-      _state.lastSaved = Date.now();
-
-      logEvent('submission', {
-        cellCount: data.cellCount,
-        executionCount: data.executionCount
+      doSubmit(data);
+    }).catch(function (err) {
+      console.warn('[bridge.js] Extension getNotebook failed:', err.message, '— submitting with cached state');
+      // Submit with whatever notebook state we have cached
+      doSubmit({
+        notebook: _state.notebook,
+        cellCount: _state.notebook ? (_state.notebook.cells || []).length : 0,
+        executionCount: _state.cellExecutions
       });
+    });
+  }
 
-      // Save final state
-      Zest.saveState(JSON.parse(JSON.stringify(_state)));
+  function doSubmit(data) {
+    var submitBtn = document.getElementById('btn-submit');
+    var notebook = (data && data.notebook) || _state.notebook;
 
-      // Submit work (teacher-graded by default for notebooks)
-      Zest.submitWork({
-        artifacts: {
-          notebook: data.notebook,
-          events: _events,
-          stats: {
-            timeSpent: _state.timeSpent,
-            cellExecutions: _state.cellExecutions,
-            interactions: _state.interactions,
-            cellCount: data.cellCount
-          }
+    if (notebook) {
+      _state.notebook = notebook;
+    }
+
+    _state.submitted = true;
+    _state.events = _events;
+    _state.lastSaved = Date.now();
+
+    logEvent('submission', {
+      cellCount: data ? data.cellCount : 0,
+      executionCount: data ? data.executionCount : 0
+    });
+
+    updateSubmitProgress('Saving final state...');
+
+    // Save final state
+    Zest.saveState(JSON.parse(JSON.stringify(_state)));
+
+    updateSubmitProgress('Submitting to gradebook...');
+
+    // Submit work (teacher-graded by default for notebooks)
+    Zest.submitWork({
+      artifacts: {
+        notebook: notebook,
+        events: _events,
+        stats: {
+          timeSpent: _state.timeSpent,
+          cellExecutions: _state.cellExecutions,
+          interactions: _state.interactions,
+          cellCount: notebook ? (notebook.cells || []).length : 0
         }
-      }).then(function (result) {
-        console.log('[bridge.js] Work submitted:', result.success ? 'OK' : result.error);
+      }
+    }).then(function (result) {
+      console.log('[bridge.js] Work submitted:', result.success ? 'OK' : result.error);
+      if (result.success) {
+        showSubmitSuccess();
         if (submitBtn) {
           submitBtn.textContent = 'Submitted';
           submitBtn.disabled = true;
         }
-      }).catch(function (err) {
-        console.error('[bridge.js] Submission failed:', err);
+      } else {
+        showSubmitError(result.error);
         if (submitBtn) {
           submitBtn.disabled = false;
           submitBtn.textContent = 'Retry Submit';
         }
-      });
+      }
     }).catch(function (err) {
-      console.error('[bridge.js] Cannot get notebook:', err);
-      if (submitBtn) submitBtn.disabled = false;
+      console.error('[bridge.js] Submission failed:', err);
+      showSubmitError(err.message);
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Retry Submit';
+      }
     });
   }
 

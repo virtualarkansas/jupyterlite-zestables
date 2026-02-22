@@ -232,6 +232,21 @@ function buildProject(project) {
     fs.mkdirSync(path.join(buildDir, 'lite', 'files'), { recursive: true });
   }
 
+  // 1b. Inject bridge-shim.js into JupyterLite lab/index.html
+  const bridgeShimSrc = path.join(TEMPLATE_DIR, 'bridge-shim.js');
+  const labIndexPath = path.join(buildDir, 'lite', 'lab', 'index.html');
+  if (fs.existsSync(bridgeShimSrc) && fs.existsSync(labIndexPath)) {
+    // Copy bridge-shim.js into lite/lab/
+    fs.copyFileSync(bridgeShimSrc, path.join(buildDir, 'lite', 'lab', 'bridge-shim.js'));
+    // Inject script tag before </body>
+    let labHtml = fs.readFileSync(labIndexPath, 'utf8');
+    if (!labHtml.includes('bridge-shim.js')) {
+      labHtml = labHtml.replace('</body>', '  <script src="bridge-shim.js"></script>\n</body>');
+      fs.writeFileSync(labIndexPath, labHtml);
+    }
+    console.log('    Injected bridge-shim.js into lab/index.html');
+  }
+
   // 2. Copy notebook into lite/files/
   const filesDir = path.join(buildDir, 'lite', 'files');
   fs.mkdirSync(filesDir, { recursive: true });
