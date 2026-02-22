@@ -47,6 +47,7 @@
   var _extensionReady = false;
   var _requestId = 0;
   var _pendingRequests = {};
+  var _stateRestored = false;  // Prevents reload loop during state restoration
 
   // Event & response tracking
   var _events = [];
@@ -305,14 +306,26 @@
   // -----------------------------------------------------------------------
 
   function onExtensionReady() {
-    console.log('[bridge.js] JupyterLite extension is ready');
+    console.log('[bridge.js] JupyterLite extension is ready (stateRestored:', _stateRestored, ')');
     dismissLoading();
     logEvent('extension_ready');
+
+    // If state was already restored (iframe reloaded after loadNotebook),
+    // just start auto-save and return. This prevents the reload loop:
+    // ready → loadNotebook → write to IndexedDB → reload → ready → ...
+    if (_stateRestored) {
+      console.log('[bridge.js] State already restored, starting auto-save');
+      if (!_isReview) {
+        startAutoSave();
+      }
+      return;
+    }
 
     var restorePromises = [];
 
     // If we have saved notebook state, load it into JupyterLite
     if (_state.notebook) {
+      _stateRestored = true; // Set BEFORE sending to prevent re-entry
       console.log('[bridge.js] Restoring saved notebook state');
       restorePromises.push(
         sendToExtension('loadNotebook', {
@@ -320,8 +333,10 @@
           path: NOTEBOOK_FILE
         }).then(function (result) {
           if (result && result.success) {
-            console.log('[bridge.js] Notebook state restored successfully');
+            console.log('[bridge.js] Notebook state restored — iframe will reload');
             logEvent('state_restored');
+            // bridge-shim will reload the iframe to pick up the new IndexedDB content.
+            // When it signals ready again, _stateRestored will be true so we skip restore.
           } else {
             console.warn('[bridge.js] Notebook restore failed:', result);
           }
@@ -351,8 +366,10 @@
     }
 
     // Start auto-save after restore completes (or immediately if nothing to restore)
+    // Note: if loadNotebook triggers a reload, auto-save starts after the second ready signal
     Promise.all(restorePromises).then(function () {
-      if (!_isReview) {
+      if (!_isReview && !_state.notebook) {
+        // No notebook to restore — start auto-save immediately
         startAutoSave();
       }
     });
