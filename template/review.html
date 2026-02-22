@@ -335,25 +335,51 @@
         'state_restored': '\uD83D\uDD04', 'files_restored': '\uD83D\uDCC2',
         'extension_ready': '\u2713', 'submission': '\u2705'
       };
-      var eventLabels = {
-        'session_start': 'Session started', 'cell_executed': 'Cell executed',
-        'cell_exec_scheduled': 'Cell queued', 'notebook_opened': 'Notebook opened',
-        'state_restored': 'State restored', 'files_restored': 'Files restored',
-        'extension_ready': 'Environment ready', 'submission': 'Work submitted'
-      };
+
+      function describeEvent(ev) {
+        var d = ev.data || {};
+        switch (ev.type) {
+          case 'session_start':
+            if (d.resuming) {
+              return 'Session resumed (prior: ' + formatTime(d.previousTime || 0) +
+                ', ' + (d.previousExecutions || 0) + ' executions' +
+                (d.previousFiles ? ', ' + d.previousFiles + ' files' : '') + ')';
+            }
+            return 'New session started';
+          case 'cell_executed':
+            var cellLabel = 'Cell ' + (d.cellIndex !== undefined ? d.cellIndex : '?');
+            if (d.success === false) return cellLabel + ' execution failed';
+            return cellLabel + ' executed successfully';
+          case 'cell_exec_scheduled':
+            return 'Cell ' + (d.cellIndex !== undefined ? d.cellIndex : '?') + ' queued for execution';
+          case 'notebook_opened':
+            return 'Notebook opened' + (d.cellCount ? ' (' + d.cellCount + ' cells)' : '') +
+              (d.path ? ': ' + d.path : '');
+          case 'state_restored':
+            var parts = ['Previous work restored'];
+            if (d.cellCount) parts.push(d.cellCount + ' cells');
+            if (d.fileCount) parts.push(d.fileCount + ' files');
+            return parts.length > 1 ? parts[0] + ' (' + parts.slice(1).join(', ') + ')' : parts[0];
+          case 'files_restored':
+            return (d.count || 0) + ' file' + ((d.count || 0) !== 1 ? 's' : '') + ' restored from previous session';
+          case 'extension_ready':
+            return 'JupyterLite environment ready';
+          case 'submission':
+            var info = [];
+            if (d.cellCount) info.push(d.cellCount + ' cells');
+            if (d.executionCount) info.push(d.executionCount + ' executions');
+            if (d.fileCount) info.push(d.fileCount + ' files');
+            return 'Work submitted' + (info.length ? ' (' + info.join(', ') + ')' : '');
+          default:
+            return ev.type;
+        }
+      }
 
       for (var i = 0; i < events.length; i++) {
         var ev = events[i];
         var relTime = ev.t - startTime;
         var icon = eventIcons[ev.type] || '\u2022';
-        var label = eventLabels[ev.type] || ev.type;
-
-        if (ev.type === 'cell_executed' && ev.data) {
-          label += ' (cell ' + ev.data.cellIndex + ', ' + (ev.data.success ? 'OK' : 'error') + ')';
-        }
-        if (ev.type === 'submission' && ev.data && ev.data.fileCount) {
-          label += ' (' + ev.data.fileCount + ' files)';
-        }
+        var label = describeEvent(ev);
 
         html += '<div class="event-item">';
         html += '<span class="event-time">+' + formatTime(relTime) + '</span>';

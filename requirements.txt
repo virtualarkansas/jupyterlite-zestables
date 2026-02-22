@@ -1,9 +1,15 @@
 # JupyterLite core
-jupyterlite-core>=0.4.0
+# PINNED: bridge-shim.js reads IndexedDB directly using the schema from v0.6+:
+#   Database name: "JupyterLite Storage - {baseUrl}"
+#   Store name: "files" (via localforage)
+#   Key: file path, Value: IModel object
+# v0.6.0 changed the database name format (breaking). v0.8.0 may restructure
+# the drive package (#1806). Stay within 0.7.x until bridge-shim is retested.
+jupyterlite-core>=0.7.0,<0.8.0
 
-# Kernels — both Python and JavaScript
-jupyterlite-pyodide-kernel>=0.4.0
-jupyterlite-javascript-kernel>=0.4.0
+# Kernels — pinned to match core 0.7.x compatibility
+jupyterlite-pyodide-kernel>=0.7.0,<0.8.0
+jupyterlite-javascript-kernel>=0.3.0,<0.4.0
 
 # Extension build dependencies
 hatchling>=1.5.0

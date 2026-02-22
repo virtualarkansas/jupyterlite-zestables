@@ -334,7 +334,10 @@
         }).then(function (result) {
           if (result && result.success) {
             console.log('[bridge.js] Notebook state restored — iframe will reload');
-            logEvent('state_restored');
+            logEvent('state_restored', {
+              cellCount: _state.notebook ? (_state.notebook.cells || []).length : 0,
+              fileCount: (_state.files || []).length
+            });
             // bridge-shim will reload the iframe to pick up the new IndexedDB content.
             // When it signals ready again, _stateRestored will be true so we skip restore.
           } else {
@@ -638,13 +641,18 @@
         // Each submission creates a new record; students should be able to submit again
         _state.submitted = false;
 
-        logEvent('session_start');
+        logEvent('session_start', {
+          resuming: !!savedState,
+          previousTime: savedState ? (savedState.timeSpent || 0) : 0,
+          previousExecutions: savedState ? (savedState.cellExecutions || 0) : 0,
+          previousFiles: savedState ? (savedState.files || []).length : 0
+        });
         startTimeTracking();
         setupUI();
         loadJupyterLite();
       }).catch(function (err) {
         console.error('[bridge.js] loadState failed:', err);
-        logEvent('session_start');
+        logEvent('session_start', { resuming: false });
         startTimeTracking();
         setupUI();
         loadJupyterLite();
