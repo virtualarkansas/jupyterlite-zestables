@@ -290,7 +290,7 @@
 
   function startAutoSave() {
     _autoSaveTimer = setInterval(function () {
-      if (_extensionReady && !_state.submitted) {
+      if (_extensionReady) {
         saveState();
       }
     }, AUTO_SAVE_INTERVAL_MS);
@@ -542,13 +542,8 @@
       if (submitBtn) submitBtn.style.display = 'none';
     }
 
-    // Already submitted: disable submit
-    if (_state.submitted) {
-      if (submitBtn) {
-        submitBtn.textContent = 'Submitted';
-        submitBtn.disabled = true;
-      }
-    }
+    // Note: _state.submitted is reset to false on each new session,
+    // so students can always resubmit. Each submission creates a new record.
   }
 
   // -----------------------------------------------------------------------
@@ -621,6 +616,10 @@
           _state = savedState;
           if (savedState.events) _events = savedState.events;
         }
+
+        // Always allow resubmission — reset submitted flag on new session
+        // Each submission creates a new record; students should be able to submit again
+        _state.submitted = false;
 
         logEvent('session_start');
         startTimeTracking();

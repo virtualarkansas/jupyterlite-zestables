@@ -1,5 +1,5 @@
 /**
- * bridge-shim.js v3 — Direct IndexedDB bridge for JupyterLite
+ * bridge-shim.js v3.1 — Direct IndexedDB bridge for JupyterLite
  *
  * This script runs INSIDE the JupyterLite iframe. It reads/writes notebook
  * and file content directly from JupyterLite's IndexedDB storage, completely
@@ -12,21 +12,15 @@
  *   - Keys: file paths (e.g., "assignment.ipynb")
  *   - Values: IModel objects with { name, path, type, format, content, ... }
  *
- * For notebooks, content is the parsed JSON object (not a string).
- * For text files, content is a string.
- * For binary files, content is a base64 string.
+ * CRITICAL: We must NOT keep the IndexedDB connection open persistently.
+ * localforage creates multiple object stores (files, counters, checkpoints)
+ * by incrementally upgrading the database version. A persistent connection
+ * blocks these upgrades via the versionchange event, which would break
+ * JupyterLite's file operations (including drag-and-drop upload).
+ * Instead, we open → operate → close for each operation.
  *
  * To trigger saves (flush in-memory model to IndexedDB), we dispatch
  * Ctrl+S keyboard events which JupyterLab's shortcut system handles.
- *
- * It handles:
- *   - getNotebook: reads notebook from IndexedDB
- *   - loadNotebook: writes notebook to IndexedDB + reloads
- *   - save: triggers Ctrl+S then reads from IndexedDB
- *   - getFiles: lists all non-notebook files from IndexedDB
- *   - loadFiles: writes files to IndexedDB
- *   - getStatus: reports notebook status
- *   - runAll / clearOutputs: dispatches keyboard shortcuts
  */
 
 (function () {
@@ -34,18 +28,7 @@
 
   var NOTEBOOK_PATH = 'assignment.ipynb';
   var _ready = false;
-  var _db = null;         // IndexedDB database reference
   var _dbName = null;     // Discovered database name
-
-  // Possible database names JupyterLite might use
-  var DB_NAME_CANDIDATES = [
-    'JupyterLite Storage',
-    'JupyterLite Storage - ./',
-    'JupyterLite Storage - /',
-    'JupyterLite Storage - /lab',
-    'JupyterLite Storage - ./lab'
-  ];
-
   var FILES_STORE = 'files';
 
   function sendToWrapper(action, data, requestId) {
@@ -62,87 +45,87 @@
   }
 
   // -------------------------------------------------------------------
-  // IndexedDB helpers
+  // IndexedDB helpers — open/close per operation to avoid blocking
+  // localforage's database upgrades
   // -------------------------------------------------------------------
 
   /**
    * Discover the JupyterLite IndexedDB database name.
-   * Tries indexedDB.databases() first, falls back to trying known names.
+   * Uses indexedDB.databases() to find it dynamically.
    */
-  function discoverDatabase() {
+  function discoverDatabaseName() {
     return new Promise(function (resolve, reject) {
-      // Method 1: Use indexedDB.databases() to find JupyterLite DB
-      if (window.indexedDB && window.indexedDB.databases) {
-        window.indexedDB.databases().then(function (databases) {
-          console.log('[bridge-shim] All IndexedDB databases:', databases.map(function (d) { return d.name; }));
-
-          for (var i = 0; i < databases.length; i++) {
-            var name = databases[i].name;
-            if (name && name.indexOf('JupyterLite Storage') !== -1) {
-              console.log('[bridge-shim] Found JupyterLite database:', name);
-              openDatabase(name).then(resolve).catch(function () {
-                // If first match fails, try others
-                tryNextCandidate(0, resolve, reject);
-              });
-              return;
-            }
-          }
-
-          // No matching DB found via databases() — try candidates
-          console.log('[bridge-shim] No JupyterLite DB found via databases(), trying candidates');
-          tryNextCandidate(0, resolve, reject);
-        }).catch(function () {
-          // databases() not supported — try candidates
-          tryNextCandidate(0, resolve, reject);
-        });
-      } else {
-        // databases() not available — try candidates
-        tryNextCandidate(0, resolve, reject);
+      if (_dbName) {
+        resolve(_dbName);
+        return;
       }
-    });
-  }
 
-  function tryNextCandidate(index, resolve, reject) {
-    if (index >= DB_NAME_CANDIDATES.length) {
-      reject(new Error('Could not find JupyterLite IndexedDB database'));
-      return;
-    }
-    openDatabase(DB_NAME_CANDIDATES[index]).then(resolve).catch(function () {
-      tryNextCandidate(index + 1, resolve, reject);
+      if (!window.indexedDB || !window.indexedDB.databases) {
+        // Can't enumerate — try known names
+        tryOpenWithFilesStore('JupyterLite Storage')
+          .then(function (name) { _dbName = name; resolve(name); })
+          .catch(function () {
+            reject(new Error('Cannot discover database name'));
+          });
+        return;
+      }
+
+      window.indexedDB.databases().then(function (databases) {
+        var candidates = [];
+        for (var i = 0; i < databases.length; i++) {
+          var name = databases[i].name;
+          if (name && name.indexOf('JupyterLite Storage') !== -1) {
+            candidates.push(name);
+          }
+        }
+
+        if (candidates.length === 0) {
+          reject(new Error('No JupyterLite Storage database found'));
+          return;
+        }
+
+        console.log('[bridge-shim] Found candidate DBs:', candidates);
+
+        // Try each candidate to find one with the 'files' store
+        function tryNext(idx) {
+          if (idx >= candidates.length) {
+            reject(new Error('No DB with files store found'));
+            return;
+          }
+          tryOpenWithFilesStore(candidates[idx])
+            .then(function (name) { _dbName = name; resolve(name); })
+            .catch(function () { tryNext(idx + 1); });
+        }
+        tryNext(0);
+      }).catch(function () {
+        reject(new Error('indexedDB.databases() failed'));
+      });
     });
   }
 
   /**
-   * Open a specific IndexedDB database and verify it has the 'files' store.
+   * Try to open a database and check if it has the 'files' store.
+   * ALWAYS closes the connection after checking.
    */
-  function openDatabase(name) {
+  function tryOpenWithFilesStore(name) {
     return new Promise(function (resolve, reject) {
       try {
         var request = window.indexedDB.open(name);
-        request.onerror = function () {
-          reject(new Error('Failed to open DB: ' + name));
+        request.onerror = function () { reject(); };
+        request.onupgradeneeded = function (event) {
+          // DB doesn't exist — abort creation
+          event.target.transaction.abort();
+          reject();
         };
         request.onsuccess = function (event) {
           var db = event.target.result;
-          // Check if this DB has the 'files' object store
-          if (db.objectStoreNames.contains(FILES_STORE)) {
-            console.log('[bridge-shim] Successfully opened DB:', name, 'with files store');
-            _db = db;
-            _dbName = name;
-            resolve(db);
+          var hasStore = db.objectStoreNames.contains(FILES_STORE);
+          db.close(); // ALWAYS close immediately
+          if (hasStore) {
+            resolve(name);
           } else {
-            console.log('[bridge-shim] DB', name, 'exists but has no files store. Stores:', Array.from(db.objectStoreNames));
-            db.close();
-            reject(new Error('No files store in DB: ' + name));
+            reject();
           }
-        };
-        // If the DB doesn't exist, this will create it (version 1) — we don't want that
-        // But we can't prevent it, so we check for the files store above
-        request.onupgradeneeded = function (event) {
-          // This fires when the DB is being created for the first time
-          // We don't want to create it — abort
-          event.target.transaction.abort();
-          reject(new Error('DB does not exist: ' + name));
         };
       } catch (e) {
         reject(e);
@@ -151,35 +134,77 @@
   }
 
   /**
-   * Get the database, re-opening if needed.
+   * Open the database, run a callback with it, then close.
+   * This prevents blocking localforage's database version upgrades.
    */
-  function getDB() {
-    if (_db) return Promise.resolve(_db);
-    return discoverDatabase();
+  function withDB(callback) {
+    return discoverDatabaseName().then(function (name) {
+      return new Promise(function (resolve, reject) {
+        var request = window.indexedDB.open(name);
+        request.onerror = function () {
+          reject(new Error('Failed to open DB: ' + name));
+        };
+        request.onupgradeneeded = function (event) {
+          event.target.transaction.abort();
+          reject(new Error('DB upgrade needed — localforage may be initializing'));
+        };
+        request.onsuccess = function (event) {
+          var db = event.target.result;
+
+          // Handle versionchange: close immediately so localforage can upgrade
+          db.onversionchange = function () {
+            console.log('[bridge-shim] versionchange event — closing DB connection');
+            db.close();
+          };
+
+          try {
+            var result = callback(db);
+            if (result && typeof result.then === 'function') {
+              result.then(function (val) {
+                db.close();
+                resolve(val);
+              }).catch(function (err) {
+                db.close();
+                reject(err);
+              });
+            } else {
+              db.close();
+              resolve(result);
+            }
+          } catch (e) {
+            db.close();
+            reject(e);
+          }
+        };
+      });
+    });
+  }
+
+  /**
+   * Run a transaction-based operation: open DB, create transaction, run op, close.
+   */
+  function withTransaction(mode, operation) {
+    return withDB(function (db) {
+      return new Promise(function (resolve, reject) {
+        if (!db.objectStoreNames.contains(FILES_STORE)) {
+          reject(new Error('No files store in database'));
+          return;
+        }
+        var tx = db.transaction(FILES_STORE, mode);
+        var store = tx.objectStore(FILES_STORE);
+        operation(store, resolve, reject);
+      });
+    });
   }
 
   /**
    * Read a single item from the files store.
    */
   function readItem(path) {
-    return getDB().then(function (db) {
-      return new Promise(function (resolve, reject) {
-        try {
-          var tx = db.transaction(FILES_STORE, 'readonly');
-          var store = tx.objectStore(FILES_STORE);
-          var request = store.get(path);
-          request.onsuccess = function () {
-            resolve(request.result || null);
-          };
-          request.onerror = function () {
-            reject(new Error('Failed to read: ' + path));
-          };
-        } catch (e) {
-          // DB might have been closed, try reopening
-          _db = null;
-          reject(e);
-        }
-      });
+    return withTransaction('readonly', function (store, resolve, reject) {
+      var request = store.get(path);
+      request.onsuccess = function () { resolve(request.result || null); };
+      request.onerror = function () { reject(new Error('Failed to read: ' + path)); };
     });
   }
 
@@ -187,23 +212,10 @@
    * Write a single item to the files store.
    */
   function writeItem(path, model) {
-    return getDB().then(function (db) {
-      return new Promise(function (resolve, reject) {
-        try {
-          var tx = db.transaction(FILES_STORE, 'readwrite');
-          var store = tx.objectStore(FILES_STORE);
-          var request = store.put(model, path);
-          request.onsuccess = function () {
-            resolve();
-          };
-          request.onerror = function () {
-            reject(new Error('Failed to write: ' + path));
-          };
-        } catch (e) {
-          _db = null;
-          reject(e);
-        }
-      });
+    return withTransaction('readwrite', function (store, resolve, reject) {
+      var request = store.put(model, path);
+      request.onsuccess = function () { resolve(); };
+      request.onerror = function () { reject(new Error('Failed to write: ' + path)); };
     });
   }
 
@@ -211,54 +223,32 @@
    * Get all keys from the files store.
    */
   function getAllKeys() {
-    return getDB().then(function (db) {
-      return new Promise(function (resolve, reject) {
-        try {
-          var tx = db.transaction(FILES_STORE, 'readonly');
-          var store = tx.objectStore(FILES_STORE);
-          var request = store.getAllKeys();
-          request.onsuccess = function () {
-            resolve(request.result || []);
-          };
-          request.onerror = function () {
-            reject(new Error('Failed to get keys'));
-          };
-        } catch (e) {
-          _db = null;
-          reject(e);
-        }
-      });
+    return withTransaction('readonly', function (store, resolve, reject) {
+      var request = store.getAllKeys();
+      request.onsuccess = function () { resolve(request.result || []); };
+      request.onerror = function () { reject(new Error('Failed to get keys')); };
     });
   }
 
   /**
-   * Get all items from the files store.
+   * Get all items from the files store via cursor.
    */
   function getAllItems() {
-    return getDB().then(function (db) {
-      return new Promise(function (resolve, reject) {
-        try {
-          var tx = db.transaction(FILES_STORE, 'readonly');
-          var store = tx.objectStore(FILES_STORE);
-          var items = [];
-          var cursorRequest = store.openCursor();
-          cursorRequest.onsuccess = function (event) {
-            var cursor = event.target.result;
-            if (cursor) {
-              items.push({ key: cursor.key, value: cursor.value });
-              cursor.continue();
-            } else {
-              resolve(items);
-            }
-          };
-          cursorRequest.onerror = function () {
-            reject(new Error('Failed to iterate files'));
-          };
-        } catch (e) {
-          _db = null;
-          reject(e);
+    return withTransaction('readonly', function (store, resolve, reject) {
+      var items = [];
+      var cursorRequest = store.openCursor();
+      cursorRequest.onsuccess = function (event) {
+        var cursor = event.target.result;
+        if (cursor) {
+          items.push({ key: cursor.key, value: cursor.value });
+          cursor.continue();
+        } else {
+          resolve(items);
         }
-      });
+      };
+      cursorRequest.onerror = function () {
+        reject(new Error('Failed to iterate files'));
+      };
     });
   }
 
@@ -267,11 +257,10 @@
   // -------------------------------------------------------------------
 
   /**
-   * Dispatch a Ctrl+S / Cmd+S keyboard event to trigger JupyterLab save.
+   * Dispatch a Ctrl+S keyboard event to trigger JupyterLab save.
    */
   function triggerSave() {
     try {
-      // Try Ctrl+S (works on all platforms in JupyterLab)
       var event = new KeyboardEvent('keydown', {
         key: 's',
         code: 'KeyS',
@@ -293,9 +282,6 @@
   // Notebook and file operations via IndexedDB
   // -------------------------------------------------------------------
 
-  /**
-   * Read notebook content from IndexedDB.
-   */
   function getNotebookFromDB() {
     return readItem(NOTEBOOK_PATH).then(function (model) {
       if (!model) {
@@ -303,14 +289,10 @@
         return null;
       }
       console.log('[bridge-shim] Read notebook from IndexedDB, type:', model.type, 'format:', model.format);
-      // The content field contains the parsed notebook JSON
       return model.content || null;
     });
   }
 
-  /**
-   * Write notebook content to IndexedDB.
-   */
   function saveNotebookToDB(notebookJSON) {
     var now = new Date().toISOString();
     var model = {
@@ -328,23 +310,14 @@
     return writeItem(NOTEBOOK_PATH, model);
   }
 
-  /**
-   * Get all non-notebook files from IndexedDB.
-   */
   function getAllFilesFromDB() {
     return getAllItems().then(function (items) {
       var files = [];
       for (var i = 0; i < items.length; i++) {
         var key = items[i].key;
         var model = items[i].value;
-
-        // Skip the notebook itself
         if (key === NOTEBOOK_PATH) continue;
-
-        // Skip directories
         if (model && model.type === 'directory') continue;
-
-        // Skip system files
         if (key.indexOf('.ipynb_checkpoints') !== -1) continue;
         if (key.indexOf('.virtual_documents') !== -1) continue;
 
@@ -364,55 +337,56 @@
     });
   }
 
-  /**
-   * Write files to IndexedDB.
-   */
   function restoreFilesToDB(files) {
     if (!files || files.length === 0) return Promise.resolve([]);
 
-    var promises = [];
+    // Sequential writes to avoid multiple concurrent DB opens
+    var chain = Promise.resolve();
     for (var i = 0; i < files.length; i++) {
-      var f = files[i];
-      var now = new Date().toISOString();
-      var model = {
-        name: f.name || f.path.split('/').pop(),
-        path: f.path,
-        last_modified: now,
-        created: now,
-        format: f.format || 'text',
-        mimetype: f.mimetype || '',
-        content: f.content,
-        size: typeof f.content === 'string' ? f.content.length : JSON.stringify(f.content).length,
-        writable: true,
-        type: f.type || 'file'
-      };
+      (function (f) {
+        var now = new Date().toISOString();
 
-      // Ensure parent directories exist
-      var parts = f.path.split('/');
-      if (parts.length > 1) {
-        // Create parent directory entries
-        for (var d = 1; d < parts.length; d++) {
-          var dirPath = parts.slice(0, d).join('/');
-          promises.push(
-            writeItem(dirPath, {
-              name: parts[d - 1],
-              path: dirPath,
-              last_modified: now,
-              created: now,
-              format: 'json',
-              mimetype: '',
-              content: null,
-              size: 0,
-              writable: true,
-              type: 'directory'
-            })
-          );
+        // Create parent directories first
+        var parts = f.path.split('/');
+        if (parts.length > 1) {
+          for (var d = 1; d < parts.length; d++) {
+            (function (dirPath, dirName) {
+              chain = chain.then(function () {
+                return writeItem(dirPath, {
+                  name: dirName,
+                  path: dirPath,
+                  last_modified: now,
+                  created: now,
+                  format: 'json',
+                  mimetype: '',
+                  content: null,
+                  size: 0,
+                  writable: true,
+                  type: 'directory'
+                });
+              });
+            })(parts.slice(0, d).join('/'), parts[d - 1]);
+          }
         }
-      }
 
-      promises.push(writeItem(f.path, model));
+        // Write the file
+        chain = chain.then(function () {
+          return writeItem(f.path, {
+            name: f.name || f.path.split('/').pop(),
+            path: f.path,
+            last_modified: now,
+            created: now,
+            format: f.format || 'text',
+            mimetype: f.mimetype || '',
+            content: f.content,
+            size: typeof f.content === 'string' ? f.content.length : JSON.stringify(f.content).length,
+            writable: true,
+            type: f.type || 'file'
+          });
+        });
+      })(files[i]);
     }
-    return Promise.all(promises);
+    return chain;
   }
 
   // -------------------------------------------------------------------
@@ -427,9 +401,7 @@
 
     switch (msg.action) {
       case 'getNotebook':
-        // Trigger save to flush in-memory changes to IndexedDB
         triggerSave();
-        // Wait for save to write to IndexedDB, then read
         setTimeout(function () {
           getNotebookFromDB()
             .then(function (notebook) {
@@ -447,7 +419,7 @@
                 error: err.message
               }, msg.requestId);
             });
-        }, 1000); // 1 second for save to complete
+        }, 1500);
         break;
 
       case 'loadNotebook':
@@ -460,7 +432,6 @@
           .then(function () {
             console.log('[bridge-shim] Notebook written to IndexedDB, reloading...');
             sendToWrapper('notebookLoaded', { success: true }, msg.requestId);
-            // Reload so JupyterLite picks up the new content from IndexedDB
             setTimeout(function () { window.location.reload(); }, 500);
           })
           .catch(function (err) {
@@ -469,9 +440,7 @@
         break;
 
       case 'save':
-        // Trigger save to flush in-memory changes
         triggerSave();
-        // Wait, then read current state from IndexedDB
         setTimeout(function () {
           getNotebookFromDB()
             .then(function (notebook) {
@@ -480,7 +449,7 @@
             .catch(function (err) {
               sendToWrapper('saved', { success: false, error: err.message }, msg.requestId);
             });
-        }, 1000);
+        }, 1500);
         break;
 
       case 'getStatus':
@@ -491,7 +460,7 @@
               isDirty: false,
               path: NOTEBOOK_PATH,
               shimMode: true,
-              appReady: !!_db,
+              appReady: !!_dbName,
               dbName: _dbName
             }, msg.requestId);
           })
@@ -508,16 +477,9 @@
         break;
 
       case 'runAll':
-        // Try keyboard shortcut: Ctrl+Shift+Enter is not standard
-        // JupyterLab uses Shift+Enter for run, but "run all" doesn't have a default shortcut
-        // Try clicking the "Run All" menu option if available
         try {
-          // Try to find and execute via the JupyterLab command system
-          // Since we can't access the app, simulate the menu action
           var runAllBtn = document.querySelector('[data-command="notebook:run-all-cells"]');
-          if (runAllBtn) {
-            runAllBtn.click();
-          }
+          if (runAllBtn) runAllBtn.click();
         } catch (e) { /* ok */ }
         sendToWrapper('runAllComplete', { success: true }, msg.requestId);
         break;
@@ -525,15 +487,12 @@
       case 'clearOutputs':
         try {
           var clearBtn = document.querySelector('[data-command="notebook:clear-all-cell-outputs"]');
-          if (clearBtn) {
-            clearBtn.click();
-          }
+          if (clearBtn) clearBtn.click();
         } catch (e) { /* ok */ }
         sendToWrapper('outputsCleared', { success: true }, msg.requestId);
         break;
 
       case 'getFiles':
-        // Trigger save first to flush any changes
         triggerSave();
         setTimeout(function () {
           getAllFilesFromDB()
@@ -544,7 +503,7 @@
               console.warn('[bridge-shim] getFiles failed:', err);
               sendToWrapper('filesContent', { files: [], error: err.message }, msg.requestId);
             });
-        }, 1000);
+        }, 1500);
         break;
 
       case 'loadFiles':
@@ -582,52 +541,39 @@
   // -------------------------------------------------------------------
 
   function checkReady() {
-    discoverDatabase()
-      .then(function (db) {
+    discoverDatabaseName()
+      .then(function (name) {
         if (!_ready) {
           _ready = true;
-          console.log('[bridge-shim] IndexedDB ready. Database:', _dbName);
+          console.log('[bridge-shim] IndexedDB ready. Database:', name);
 
-          // Check if notebook exists in the DB
+          // Check if notebook exists
           readItem(NOTEBOOK_PATH).then(function (model) {
             var hasNotebook = !!(model && model.content);
             console.log('[bridge-shim] Notebook in IndexedDB:', hasNotebook);
 
-            // Also list all keys for debugging
             getAllKeys().then(function (keys) {
               console.log('[bridge-shim] All keys in files store:', keys);
             }).catch(function () { /* ok */ });
 
             sendToWrapper('ready', {
-              version: '3.0.0-indexeddb',
+              version: '3.1.0-indexeddb',
               capabilities: [
-                'getNotebook',
-                'loadNotebook',
-                'save',
-                'getStatus',
-                'runAll',
-                'clearOutputs',
-                'getFiles',
-                'loadFiles'
+                'getNotebook', 'loadNotebook', 'save', 'getStatus',
+                'runAll', 'clearOutputs', 'getFiles', 'loadFiles'
               ],
               hasWidget: hasNotebook,
-              dbName: _dbName
+              dbName: name
             });
           }).catch(function () {
             sendToWrapper('ready', {
-              version: '3.0.0-indexeddb',
+              version: '3.1.0-indexeddb',
               capabilities: [
-                'getNotebook',
-                'loadNotebook',
-                'save',
-                'getStatus',
-                'runAll',
-                'clearOutputs',
-                'getFiles',
-                'loadFiles'
+                'getNotebook', 'loadNotebook', 'save', 'getStatus',
+                'runAll', 'clearOutputs', 'getFiles', 'loadFiles'
               ],
               hasWidget: false,
-              dbName: _dbName
+              dbName: name
             });
           });
         }
@@ -639,8 +585,8 @@
   }
 
   // Start
-  console.log('[bridge-shim] Zest bridge shim v3 loaded (IndexedDB direct access)');
+  console.log('[bridge-shim] Zest bridge shim v3.1 loaded (IndexedDB, no persistent connection)');
   // Give JupyterLite time to initialize and create the IndexedDB
-  setTimeout(checkReady, 3000);
+  setTimeout(checkReady, 4000);
 
 })();
