@@ -1,0 +1,15 @@
+{
+  "name": "jupyterlite-zestables",
+  "version": "1.0.0",
+  "description": "JupyterLite notebooks packaged as Zest content for Canvas LMS integration",
+  "private": true,
+  "scripts": {
+    "build": "node build-tool/build.js",
+    "build:extension": "cd extension && npm run build",
+    "build:runtime": "node build-tool/build-runtime.js",
+    "build:all": "npm run build:extension && npm run build:runtime && npm run build",
+    "clean": "rm -rf dist/* runtime/_output"
+  },
+  "keywords": ["jupyterlite", "zest", "lti", "canvas", "notebooks"],
+  "license": "MIT"
+}

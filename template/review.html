@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Notebook Review</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0a0a1a;
+      color: #e0e0e0;
+      padding: 20px;
+      max-width: 900px;
+      margin: 0 auto;
+    }
+
+    h1 {
+      font-size: 20px;
+      color: #e94560;
+      margin-bottom: 16px;
+    }
+
+    /* Stats bar */
+    .stats-bar {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin-bottom: 20px;
+      padding: 12px 16px;
+      background: #16213e;
+      border-radius: 8px;
+      border: 1px solid #0f3460;
+    }
+    .stat-item {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .stat-label {
+      font-size: 11px;
+      color: #7f8c8d;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .stat-value {
+      font-size: 16px;
+      font-weight: 600;
+      color: #e0e0e0;
+    }
+
+    /* Notebook cells */
+    .cell {
+      margin-bottom: 12px;
+      border: 1px solid #1a2744;
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    .cell-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 6px 12px;
+      background: #16213e;
+      font-size: 11px;
+      color: #7f8c8d;
+    }
+    .cell-type {
+      text-transform: uppercase;
+      font-weight: 600;
+    }
+    .cell-type.code { color: #3498db; }
+    .cell-type.markdown { color: #27ae60; }
+
+    .cell-source {
+      padding: 12px;
+      background: #0d0d22;
+      font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+      font-size: 13px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      overflow-x: auto;
+    }
+    .cell-source.markdown-source {
+      font-family: inherit;
+      background: #111;
+    }
+
+    .cell-outputs {
+      border-top: 1px solid #1a2744;
+      padding: 12px;
+      background: #0a0a15;
+    }
+    .cell-output {
+      margin-bottom: 8px;
+    }
+    .cell-output:last-child { margin-bottom: 0; }
+    .cell-output pre {
+      font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+      font-size: 12px;
+      line-height: 1.4;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+    .cell-output .output-text { color: #ccc; }
+    .cell-output .output-error { color: #e74c3c; }
+    .cell-output .output-stream { color: #f39c12; }
+    .cell-output img {
+      max-width: 100%;
+      border-radius: 4px;
+    }
+
+    .execution-count {
+      color: #3498db;
+      font-weight: 600;
+    }
+
+    /* Event timeline */
+    .timeline-section {
+      margin-top: 24px;
+    }
+    .timeline-section h2 {
+      font-size: 16px;
+      color: #e94560;
+      margin-bottom: 12px;
+    }
+    .timeline-bar {
+      height: 24px;
+      background: #16213e;
+      border-radius: 4px;
+      position: relative;
+      margin-bottom: 12px;
+      overflow: hidden;
+      border: 1px solid #0f3460;
+    }
+    .timeline-marker {
+      position: absolute;
+      top: 0;
+      width: 2px;
+      height: 100%;
+      background: #e94560;
+      opacity: 0.7;
+    }
+    .timeline-marker.exec { background: #3498db; }
+    .timeline-marker.submit { background: #27ae60; width: 3px; }
+
+    .timeline-legend {
+      display: flex;
+      gap: 16px;
+      font-size: 11px;
+      color: #7f8c8d;
+      margin-bottom: 12px;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .legend-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+
+    .event-list {
+      max-height: 300px;
+      overflow-y: auto;
+      border: 1px solid #0f3460;
+      border-radius: 6px;
+    }
+    .event-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 6px 12px;
+      font-size: 12px;
+      border-bottom: 1px solid #0f3460;
+    }
+    .event-item:last-child { border-bottom: none; }
+    .event-time {
+      color: #7f8c8d;
+      font-family: monospace;
+      min-width: 60px;
+    }
+    .event-icon { width: 16px; text-align: center; }
+    .event-desc { color: #ccc; }
+
+    .no-data {
+      text-align: center;
+      padding: 40px;
+      color: #666;
+      font-style: italic;
+    }
+  </style>
+</head>
+<body>
+  <h1 id="review-title">Notebook Review</h1>
+  <div id="stats-bar" class="stats-bar"></div>
+  <div id="notebook-cells"></div>
+  <div id="timeline-section" class="timeline-section"></div>
+
+  <script src="/public/zest-bridge.js"></script>
+  <script>
+  (function () {
+    'use strict';
+
+    function formatTime(seconds) {
+      if (seconds < 60) return seconds + 's';
+      var m = Math.floor(seconds / 60);
+      var s = seconds % 60;
+      if (m < 60) return m + 'm ' + s + 's';
+      var h = Math.floor(m / 60);
+      m = m % 60;
+      return h + 'h ' + m + 'm';
+    }
+
+    function escapeHtml(str) {
+      var div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    function renderStats(stats) {
+      var bar = document.getElementById('stats-bar');
+      if (!bar || !stats) return;
+
+      var items = [
+        { label: 'Time Spent', value: formatTime(stats.timeSpent || 0) },
+        { label: 'Cell Executions', value: (stats.cellExecutions || 0).toString() },
+        { label: 'Interactions', value: (stats.interactions || 0).toString() },
+        { label: 'Cells', value: (stats.cellCount || 0).toString() }
+      ];
+
+      bar.innerHTML = items.map(function (item) {
+        return '<div class="stat-item">' +
+          '<span class="stat-label">' + item.label + '</span>' +
+          '<span class="stat-value">' + item.value + '</span>' +
+          '</div>';
+      }).join('');
+    }
+
+    function renderNotebook(notebook) {
+      var container = document.getElementById('notebook-cells');
+      if (!container || !notebook || !notebook.cells) {
+        container.innerHTML = '<div class="no-data">No notebook data available</div>';
+        return;
+      }
+
+      var html = '';
+      for (var i = 0; i < notebook.cells.length; i++) {
+        var cell = notebook.cells[i];
+        var cellType = cell.cell_type || 'code';
+        var source = Array.isArray(cell.source) ? cell.source.join('') : (cell.source || '');
+        var execCount = cell.execution_count;
+
+        html += '<div class="cell">';
+        html += '<div class="cell-header">';
+        html += '<span class="cell-type ' + cellType + '">' + cellType + '</span>';
+        if (execCount) {
+          html += '<span class="execution-count">In [' + execCount + ']</span>';
+        }
+        html += '</div>';
+
+        // Source
+        var sourceClass = cellType === 'markdown' ? 'cell-source markdown-source' : 'cell-source';
+        html += '<div class="' + sourceClass + '">' + escapeHtml(source) + '</div>';
+
+        // Outputs (code cells only)
+        if (cellType === 'code' && cell.outputs && cell.outputs.length > 0) {
+          html += '<div class="cell-outputs">';
+          for (var j = 0; j < cell.outputs.length; j++) {
+            var output = cell.outputs[j];
+            html += renderOutput(output);
+          }
+          html += '</div>';
+        }
+
+        html += '</div>';
+      }
+
+      container.innerHTML = html;
+    }
+
+    function renderOutput(output) {
+      var html = '<div class="cell-output">';
+
+      if (output.output_type === 'stream') {
+        var text = Array.isArray(output.text) ? output.text.join('') : (output.text || '');
+        var cls = output.name === 'stderr' ? 'output-error' : 'output-stream';
+        html += '<pre class="' + cls + '">' + escapeHtml(text) + '</pre>';
+      } else if (output.output_type === 'execute_result' || output.output_type === 'display_data') {
+        var data = output.data || {};
+        if (data['image/png']) {
+          html += '<img src="data:image/png;base64,' + data['image/png'] + '" alt="Output image">';
+        } else if (data['text/html']) {
+          var htmlContent = Array.isArray(data['text/html']) ? data['text/html'].join('') : data['text/html'];
+          html += '<div>' + htmlContent + '</div>';
+        } else if (data['text/plain']) {
+          var plainText = Array.isArray(data['text/plain']) ? data['text/plain'].join('') : data['text/plain'];
+          html += '<pre class="output-text">' + escapeHtml(plainText) + '</pre>';
+        }
+      } else if (output.output_type === 'error') {
+        var traceback = (output.traceback || []).join('\n');
+        // Strip ANSI codes
+        traceback = traceback.replace(/\x1b\[[0-9;]*m/g, '');
+        html += '<pre class="output-error">' + escapeHtml(traceback) + '</pre>';
+      }
+
+      html += '</div>';
+      return html;
+    }
+
+    function renderTimeline(events) {
+      var section = document.getElementById('timeline-section');
+      if (!section || !events || events.length === 0) {
+        section.innerHTML = '<h2>Event Timeline</h2><div class="no-data">No events recorded</div>';
+        return;
+      }
+
+      var startTime = events[0].t;
+      var endTime = events[events.length - 1].t;
+      var duration = Math.max(endTime - startTime, 1);
+
+      var html = '<h2>Event Timeline</h2>';
+
+      // Timeline bar
+      html += '<div class="timeline-bar">';
+      for (var i = 0; i < events.length; i++) {
+        var pct = ((events[i].t - startTime) / duration) * 100;
+        var cls = 'timeline-marker';
+        if (events[i].type === 'cell_executed') cls += ' exec';
+        if (events[i].type === 'submission') cls += ' submit';
+        html += '<div class="' + cls + '" style="left:' + pct + '%"></div>';
+      }
+      html += '</div>';
+
+      // Legend
+      html += '<div class="timeline-legend">';
+      html += '<div class="legend-item"><span class="legend-dot" style="background:#e94560"></span> Events</div>';
+      html += '<div class="legend-item"><span class="legend-dot" style="background:#3498db"></span> Cell Executions</div>';
+      html += '<div class="legend-item"><span class="legend-dot" style="background:#27ae60"></span> Submission</div>';
+      html += '</div>';
+
+      // Event list
+      html += '<div class="event-list">';
+      var eventIcons = {
+        'session_start': '▶',
+        'cell_executed': '⚡',
+        'cell_exec_scheduled': '⏳',
+        'notebook_opened': '📓',
+        'state_restored': '🔄',
+        'extension_ready': '✓',
+        'submission': '✅'
+      };
+
+      var eventLabels = {
+        'session_start': 'Session started',
+        'cell_executed': 'Cell executed',
+        'cell_exec_scheduled': 'Cell queued',
+        'notebook_opened': 'Notebook opened',
+        'state_restored': 'State restored',
+        'extension_ready': 'Environment ready',
+        'submission': 'Work submitted'
+      };
+
+      for (var i = 0; i < events.length; i++) {
+        var ev = events[i];
+        var relTime = ev.t - startTime;
+        var icon = eventIcons[ev.type] || '•';
+        var label = eventLabels[ev.type] || ev.type;
+
+        if (ev.type === 'cell_executed' && ev.data) {
+          label += ' (cell ' + ev.data.cellIndex + ', ' + (ev.data.success ? 'OK' : 'error') + ')';
+        }
+
+        html += '<div class="event-item">';
+        html += '<span class="event-time">+' + formatTime(relTime) + '</span>';
+        html += '<span class="event-icon">' + icon + '</span>';
+        html += '<span class="event-desc">' + escapeHtml(label) + '</span>';
+        html += '</div>';
+      }
+      html += '</div>';
+
+      section.innerHTML = html;
+    }
+
+    // Main
+    if (typeof Zest === 'undefined') {
+      document.body.innerHTML = '<div class="no-data">Zest not available</div>';
+      return;
+    }
+
+    Zest.onReady(function () {
+      var submission = Zest.getSubmission();
+      if (!submission || !submission.artifacts) {
+        document.getElementById('notebook-cells').innerHTML =
+          '<div class="no-data">No submission data available</div>';
+        return;
+      }
+
+      var artifacts = submission.artifacts;
+      renderStats(artifacts.stats);
+      renderNotebook(artifacts.notebook);
+      renderTimeline(artifacts.events);
+    });
+  })();
+  </script>
+</body>
+</html>

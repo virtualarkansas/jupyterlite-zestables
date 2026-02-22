@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{NOTEBOOK_TITLE}}</title>
+  <style>
+    /* Reset */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+
+    /* CSS custom properties for dynamic layout */
+    :root {
+      --toolbar-height: 40px;
+      --attribution-height: 24px;
+    }
+
+    /* Zest toolbar */
+    #zest-toolbar {
+      height: var(--toolbar-height);
+      background: #1a1a2e;
+      color: #e0e0e0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16px;
+      border-bottom: 1px solid #0f3460;
+      user-select: none;
+      z-index: 100;
+    }
+
+    .toolbar-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .toolbar-left .notebook-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: #e94560;
+    }
+    .toolbar-left .status-badge {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-weight: 600;
+    }
+    .status-badge.idle { background: #27ae60; color: white; }
+    .status-badge.busy { background: #f39c12; color: white; }
+    .status-badge.error { background: #e74c3c; color: white; }
+    .status-badge.syncing { background: #3498db; color: white; }
+    .status-badge.saved { background: #27ae60; color: white; }
+    .status-badge.dirty { background: #f39c12; color: white; }
+
+    .toolbar-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .toolbar-right button {
+      padding: 6px 16px;
+      border: none;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s, opacity 0.15s;
+    }
+    .toolbar-right button:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    .btn-save {
+      background: #2c3e50;
+      color: #ccc;
+    }
+    .btn-save:hover:not(:disabled) { background: #34495e; }
+    .btn-submit {
+      background: #27ae60;
+      color: white;
+    }
+    .btn-submit:hover:not(:disabled) { background: #2ecc71; }
+
+    .cell-count {
+      font-size: 11px;
+      color: #7f8c8d;
+    }
+
+    /* JupyterLite iframe */
+    #jupyter-frame {
+      width: 100%;
+      height: calc(100% - var(--toolbar-height) - var(--attribution-height));
+      border: none;
+      display: block;
+    }
+
+    /* Attribution bar */
+    #attribution {
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      height: var(--attribution-height);
+      background: rgba(0,0,0,0.75);
+      color: #aaa;
+      font: 11px/24px -apple-system, BlinkMacSystemFont, sans-serif;
+      text-align: center;
+      z-index: 1000;
+    }
+    #attribution a { color: #7cb9e8; text-decoration: none; }
+    #attribution a:hover { text-decoration: underline; }
+
+    /* Loading overlay */
+    #loading-overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: #000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      z-index: 2000;
+      transition: opacity 0.5s ease;
+    }
+    #loading-overlay.hidden { opacity: 0; pointer-events: none; }
+    .loading-spinner {
+      width: 40px; height: 40px;
+      border: 3px solid rgba(255,255,255,0.2);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    .loading-text {
+      color: #ccc;
+      font: 14px -apple-system, sans-serif;
+      margin-top: 16px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Submit confirmation dialog */
+    #submit-dialog {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.7);
+      z-index: 3000;
+      align-items: center;
+      justify-content: center;
+    }
+    #submit-dialog.visible { display: flex; }
+    .dialog-box {
+      background: #1a1a2e;
+      border: 1px solid #0f3460;
+      border-radius: 8px;
+      padding: 24px;
+      max-width: 400px;
+      width: 90%;
+      color: #e0e0e0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+    .dialog-box h3 {
+      margin-bottom: 12px;
+      color: #e94560;
+    }
+    .dialog-box p {
+      font-size: 14px;
+      line-height: 1.5;
+      margin-bottom: 16px;
+      color: #ccc;
+    }
+    .dialog-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+    .dialog-actions button {
+      padding: 8px 20px;
+      border: none;
+      border-radius: 4px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .dialog-cancel { background: #2c3e50; color: #ccc; }
+    .dialog-confirm { background: #27ae60; color: white; }
+  </style>
+</head>
+<body>
+  <div id="loading-overlay">
+    <div class="loading-spinner"></div>
+    <div class="loading-text">Loading {{NOTEBOOK_TITLE}}&hellip;</div>
+  </div>
+
+  <div id="zest-toolbar">
+    <div class="toolbar-left">
+      <span class="notebook-title">{{NOTEBOOK_TITLE}}</span>
+      <span class="status-badge idle" id="kernel-status">Idle</span>
+      <span class="status-badge saved" id="save-status">Saved</span>
+      <span class="cell-count" id="cell-info"></span>
+    </div>
+    <div class="toolbar-right">
+      <button class="btn-save" id="btn-save" title="Save notebook state">Save</button>
+      <button class="btn-submit" id="btn-submit" title="Submit notebook for grading">Submit</button>
+    </div>
+  </div>
+
+  <iframe id="jupyter-frame"
+    sandbox="allow-scripts allow-same-origin allow-downloads"
+    title="{{NOTEBOOK_TITLE}} - JupyterLite Notebook">
+  </iframe>
+
+  <div id="attribution">
+    <a href="https://jupyterlite.readthedocs.io" target="_blank" rel="noopener">JupyterLite</a>
+    &mdash; Powered by <a href="https://pyodide.org" target="_blank" rel="noopener">Pyodide</a>
+    &mdash; Powered by Zest
+  </div>
+
+  <div id="submit-dialog">
+    <div class="dialog-box">
+      <h3>Submit Notebook</h3>
+      <p>Are you sure you want to submit your notebook? Your current work, including all code and outputs, will be sent for grading.</p>
+      <div class="dialog-actions">
+        <button class="dialog-cancel" id="submit-cancel">Cancel</button>
+        <button class="dialog-confirm" id="submit-confirm">Submit</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/public/zest-bridge.js"></script>
+  <script src="bridge.js"></script>
+</body>
+</html>

@@ -1,0 +1,31 @@
+{
+  "name": "{{NOTEBOOK_TITLE}}",
+  "version": "1.0.0",
+  "description": "{{NOTEBOOK_DESCRIPTION}}",
+  "grading": "manual",
+  "parameters": [
+    {
+      "key": "kernel",
+      "type": "select",
+      "default": "",
+      "options": ["", "python", "javascript"],
+      "label": "Default Kernel (blank = auto-detect)"
+    }
+  ],
+  "sandbox": {
+    "allowScripts": true,
+    "allowSameOrigin": true,
+    "allowPopups": false,
+    "allowForms": false,
+    "allowDownloads": true
+  },
+  "tags": ["notebook", "jupyterlite", "interactive"],
+  "width": 1000,
+  "height": 750,
+  "reviewFile": "review.html",
+  "attribution": {
+    "source": "JupyterLite — Jupyter in the Browser",
+    "license": "BSD-3-Clause",
+    "url": "https://jupyterlite.readthedocs.io"
+  }
+}

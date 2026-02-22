@@ -1,0 +1,10 @@
+# JupyterLite core
+jupyterlite-core>=0.4.0
+
+# Kernels — both Python and JavaScript
+jupyterlite-pyodide-kernel>=0.4.0
+jupyterlite-javascript-kernel>=0.4.0
+
+# Extension build dependencies
+hatchling>=1.5.0
+hatch-jupyter-builder>=0.5

@@ -1,0 +1,12 @@
+node_modules/
+dist/*.zip
+runtime/_output/
+runtime/.jupyterlite.doit.db
+extension/lib/
+extension/node_modules/
+*.pyc
+__pycache__/
+.DS_Store
+*.egg-info/
+build/
+.ipynb_checkpoints/
