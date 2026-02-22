@@ -371,14 +371,25 @@
     // -------------------------------------------------------------------
     var _submittedNotebook = null;
     var _submittedFiles = null;
+    var _notebookLoaded = false;
 
     function onShimReady() {
-      console.log('[review] Bridge-shim ready, loading submitted notebook');
+      console.log('[review] Bridge-shim ready, _notebookLoaded=' + _notebookLoaded);
 
       var loadingMsg = document.getElementById('loading-message');
 
+      // After loadNotebook, bridge-shim writes to IndexedDB and reloads the iframe.
+      // On the second "ready" signal (after reload), skip re-sending to avoid infinite loop.
+      if (_notebookLoaded) {
+        console.log('[review] Notebook already loaded — skipping restore, showing iframe');
+        if (loadingMsg) loadingMsg.classList.add('hidden');
+        _jupyterFrame.style.display = 'block';
+        return;
+      }
+
       // Load the submitted notebook into JupyterLite
       if (_submittedNotebook) {
+        _notebookLoaded = true;  // Set BEFORE sending to prevent re-entry after reload
         sendToExtension('loadNotebook', {
           notebook: _submittedNotebook,
           path: NOTEBOOK_FILE
