@@ -31,6 +31,7 @@
   var _params = {};
   var _state = {
     notebook: null,
+    files: [],        // Additional files (images, CSVs, etc.) from JupyterLite
     timeSpent: 0,
     interactions: 0,
     cellExecutions: 0,
@@ -236,24 +237,33 @@
 
     updateSaveStatus('syncing');
 
-    // Get current notebook content from extension
-    sendToExtension('getNotebook').then(function (data) {
-      if (data && data.notebook) {
-        _state.notebook = data.notebook;
-        _state.cellExecutions = data.executionCount || _state.cellExecutions;
+    // Get current notebook content and files from extension
+    var nbPromise = sendToExtension('getNotebook').catch(function (err) {
+      console.warn('[bridge.js] getNotebook failed:', err.message);
+      return null;
+    });
+    var filesPromise = sendToExtension('getFiles').catch(function (err) {
+      console.warn('[bridge.js] getFiles failed:', err.message);
+      return null;
+    });
+
+    Promise.all([nbPromise, filesPromise]).then(function (results) {
+      var nbData = results[0];
+      var filesData = results[1];
+
+      if (nbData && nbData.notebook) {
+        _state.notebook = nbData.notebook;
+        _state.cellExecutions = nbData.executionCount || _state.cellExecutions;
       }
+      if (filesData && filesData.files) {
+        _state.files = filesData.files;
+      }
+
       _state.lastSaved = Date.now();
       _state.events = _events;
 
       console.log('[bridge.js] Saving state, timeSpent:', _state.timeSpent,
-        'cells:', _state.cellExecutions);
-      Zest.saveState(JSON.parse(JSON.stringify(_state)));
-      updateSaveStatus('saved');
-    }).catch(function (err) {
-      console.warn('[bridge.js] Save failed (extension timeout):', err.message);
-      // Save what we have even without fresh notebook content
-      _state.lastSaved = Date.now();
-      _state.events = _events;
+        'cells:', _state.cellExecutions, 'files:', (_state.files || []).length);
       Zest.saveState(JSON.parse(JSON.stringify(_state)));
       updateSaveStatus('saved');
     });
@@ -299,28 +309,53 @@
     dismissLoading();
     logEvent('extension_ready');
 
+    var restorePromises = [];
+
     // If we have saved notebook state, load it into JupyterLite
     if (_state.notebook) {
       console.log('[bridge.js] Restoring saved notebook state');
-      sendToExtension('loadNotebook', {
-        notebook: _state.notebook,
-        path: NOTEBOOK_FILE
-      }).then(function (result) {
-        if (result && result.success) {
-          console.log('[bridge.js] Notebook state restored successfully');
-          logEvent('state_restored');
-        } else {
-          console.warn('[bridge.js] Notebook restore failed:', result);
-        }
-      }).catch(function (err) {
-        console.warn('[bridge.js] Notebook restore error:', err.message);
-      });
+      restorePromises.push(
+        sendToExtension('loadNotebook', {
+          notebook: _state.notebook,
+          path: NOTEBOOK_FILE
+        }).then(function (result) {
+          if (result && result.success) {
+            console.log('[bridge.js] Notebook state restored successfully');
+            logEvent('state_restored');
+          } else {
+            console.warn('[bridge.js] Notebook restore failed:', result);
+          }
+        }).catch(function (err) {
+          console.warn('[bridge.js] Notebook restore error:', err.message);
+        })
+      );
     }
 
-    // Start auto-save
-    if (!_isReview) {
-      startAutoSave();
+    // If we have saved files (images, CSVs, etc.), restore them too
+    if (_state.files && _state.files.length > 0) {
+      console.log('[bridge.js] Restoring', _state.files.length, 'saved files');
+      restorePromises.push(
+        sendToExtension('loadFiles', {
+          files: _state.files
+        }).then(function (result) {
+          if (result && result.success) {
+            console.log('[bridge.js] Files restored:', result.count);
+            logEvent('files_restored', { count: result.count });
+          } else {
+            console.warn('[bridge.js] Files restore failed:', result);
+          }
+        }).catch(function (err) {
+          console.warn('[bridge.js] Files restore error:', err.message);
+        })
+      );
     }
+
+    // Start auto-save after restore completes (or immediately if nothing to restore)
+    Promise.all(restorePromises).then(function () {
+      if (!_isReview) {
+        startAutoSave();
+      }
+    });
   }
 
   // -----------------------------------------------------------------------
@@ -371,27 +406,38 @@
 
     showSubmitProgress('Getting notebook content...');
 
-    // Try to get notebook content from the extension/shim
-    sendToExtension('getNotebook').then(function (data) {
-      doSubmit(data);
-    }).catch(function (err) {
-      console.warn('[bridge.js] Extension getNotebook failed:', err.message, '— submitting with cached state');
-      // Submit with whatever notebook state we have cached
-      doSubmit({
+    // Try to get notebook content AND files from the extension/shim
+    var nbPromise = sendToExtension('getNotebook').catch(function (err) {
+      console.warn('[bridge.js] getNotebook failed:', err.message);
+      return {
         notebook: _state.notebook,
         cellCount: _state.notebook ? (_state.notebook.cells || []).length : 0,
         executionCount: _state.cellExecutions
-      });
+      };
+    });
+
+    var filesPromise = sendToExtension('getFiles').catch(function (err) {
+      console.warn('[bridge.js] getFiles failed:', err.message);
+      return { files: _state.files || [] };
+    });
+
+    Promise.all([nbPromise, filesPromise]).then(function (results) {
+      var nbData = results[0] || {};
+      var filesData = results[1] || {};
+      nbData.files = filesData.files || _state.files || [];
+      doSubmit(nbData);
     });
   }
 
   function doSubmit(data) {
     var submitBtn = document.getElementById('btn-submit');
     var notebook = (data && data.notebook) || _state.notebook;
+    var files = (data && data.files) || _state.files || [];
 
     if (notebook) {
       _state.notebook = notebook;
     }
+    _state.files = files;
 
     _state.submitted = true;
     _state.events = _events;
@@ -399,12 +445,13 @@
 
     logEvent('submission', {
       cellCount: data ? data.cellCount : 0,
-      executionCount: data ? data.executionCount : 0
+      executionCount: data ? data.executionCount : 0,
+      fileCount: files.length
     });
 
     updateSubmitProgress('Saving final state...');
 
-    // Save final state
+    // Save final state (includes notebook + files)
     Zest.saveState(JSON.parse(JSON.stringify(_state)));
 
     updateSubmitProgress('Submitting to gradebook...');
@@ -413,12 +460,14 @@
     Zest.submitWork({
       artifacts: {
         notebook: notebook,
+        files: files,
         events: _events,
         stats: {
           timeSpent: _state.timeSpent,
           cellExecutions: _state.cellExecutions,
           interactions: _state.interactions,
-          cellCount: notebook ? (notebook.cells || []).length : 0
+          cellCount: notebook ? (notebook.cells || []).length : 0,
+          fileCount: files.length
         }
       }
     }).then(function (result) {
